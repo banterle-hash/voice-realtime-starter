@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Realtime Voice — Retro Terminal</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{
+    --bg:#0a0b0d; --panel:#0e1115; --border:#1a1f26; --text:#d6f5d6; --muted:#8fbf8f;
+    --accent:#36d399; --danger:#ff6b6b; --mono: ui-monospace, Menlo, Monaco, Consolas, "Courier New", monospace;
+  }
+  html,body{height:100%}
+  body{
+    margin:0; background:radial-gradient(1000px 600px at 20% 10%, #0c1016 0%, #0a0b0d 60%, #07080a 100%);
+    color:var(--text); font-family:var(--mono); font-size:14px; letter-spacing:.15px; image-rendering: pixelated;
+  }
+  .scan:before{
+    content:""; position:fixed; inset:0; pointer-events:none;
+    background:repeating-linear-gradient(0deg, rgba(255,255,255,.05), rgba(255,255,255,.05) 1px, transparent 1px, transparent 3px);
+    mix-blend-mode:soft-light; opacity:.06;
+  }
+  .wrap{max-width:860px; margin:28px auto; padding:0 16px}
+  .title{display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; color:var(--muted)}
+  .led{width:9px;height:9px;border-radius:2px;background:#0f5132;box-shadow:0 0 8px #0f5132;display:inline-block;margin-right:8px}
+  .crt-box{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    box-shadow:0 0 0 1px rgba(255,255,255,.03) inset, 0 10px 30px rgba(0,0,0,.35);
+    overflow:hidden;
+  }
+  .hdr{padding:10px 12px; color:#a0d3a0; border-bottom:1px solid var(--border); display:flex; gap:10px}
+  .prompt{color:#7fbf7f}
+  .content{padding:14px}
+  .grid{display:grid; gap:12px}
+  label{color:#9ad39a; font-weight:700; font-size:12px}
+  textarea,input,select,button,.kbd,.code{
+    width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border);
+    background:#0b0e12; color:var(--text); font-family:var(--mono);
+  }
+  textarea{height:180px; resize:vertical}
+  select{background:#0b0e12}
+  input::placeholder, textarea::placeholder{color:#5f805f}
+  .row{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  button{
+    cursor:pointer; font-weight:800; letter-spacing:.6px; text-transform:uppercase;
+    background:linear-gradient(180deg,#173625,#12271c); border:1px solid #1f3f2f;
+  }
+  button.secondary{background:linear-gradient(180deg,#141a1f,#0f1419); border:1px solid #22303a}
+  button:hover{box-shadow:0 0 0 1px #2d5a44, 0 0 14px rgba(54,211,153,.25) inset}
+  button:disabled{opacity:.6; cursor:not-allowed}
+  .panel{padding:12px; border:1px dashed #26303a; border-radius:8px; background:#0a0d11}
+  .section{color:#a7e8a7; margin:2px 0 8px; font-weight:900; letter-spacing:.5px}
+  .muted{color:#7aa07a}
+  .hint{color:#7aa07a}
+  .kbd{display:inline-block; padding:4px 8px; background:#0d1215; border:1px solid #26323a; border-radius:6px; font-weight:700; font-size:12px}
+  .code{background:#0a0d10; line-height:1.45; white-space:pre; overflow:auto}
+  .badge{display:inline-block; padding:2px 8px; border:1px solid #244; border-radius:999px; font-size:12px; color:#a6cfa6; background:#0b1012}
+  /* retro accordion */
+  .accordion {border:1px solid var(--border); border-radius:8px; background:#0b0e12;}
+  .acc-head{
+    width:100%; text-align:left; padding:10px 12px; font-weight:800; letter-spacing:.5px;
+    background:linear-gradient(180deg,#12181d,#0d1216); border:0; border-bottom:1px solid var(--border); color:#cfe7cf; display:flex; align-items:center; gap:10px;
+  }
+  .carat{display:inline-block; transform:rotate(-90deg); transition:transform .25s cubic-bezier(.4,0,.2,1)}
+  .acc-head[aria-expanded="true"] .carat{transform:rotate(0deg)}
+  .acc-body{overflow:hidden; max-height:0; transition:max-height .35s cubic-bezier(.25,.46,.45,.94)}
+  .acc-body.open{max-height:900px}
+  .sweep{position:relative}
+  .sweep:before{
+    content:""; position:absolute; inset:0; background:linear-gradient(180deg, transparent, rgba(54,211,153,.05), transparent);
+    transform:translateY(-100%); animation: none; pointer-events:none;
+  }
+  .sweep.run:before{animation:sweep 420ms ease-out}
+  @keyframes sweep{to{transform:translateY(0%)}}
+</style>
+</head>
+<body class="scan">
+  <div class="wrap">
+    <div class="title">
+      <div><span class="led"></span>Realtime Voice — <span class="muted">Retro Terminal</span></div>
+      <div class="badge" id="hostBadge">host: …</div>
+    </div>
+
+    <div class="crt-box">
+      <div class="hdr"><span class="prompt">$</span> /voice/realtime</div>
+      <div class="content">
+
+        <div class="panel">
+          <div class="section">Base rules (always applied)</div>
+          <div class="muted">
+            • English only • Wait ~0.6–1.0s before replying • Don’t talk over the caller • 1–2 short sentences • Ask brief clarifying questions
+          </div>
+        </div>
+
+        <div class="grid" style="grid-template-columns:1fr auto; align-items:end; gap:10px">
+          <div>
+            <label for="preset">Preset</label>
+            <select id="preset">
+              <option value="">— Select a preset —</option>
+              <option value="Be a cheerful concierge. Greet the caller by name if provided, ask how you can help, keep answers to one sentence. Clarify if you’re unsure.">Cheerful concierge</option>
+              <option value="You are an appointment scheduler for a clinic. Verify the caller’s name, propose 2 time slots in the next 7 days, and confirm by repeating it back.">Clinic appointment scheduler</option>
+              <option value="You are a calm IT help desk agent. Ask for device and OS, suggest one actionable step at a time. Avoid jargon. ≤ 20 words per response.">Calm IT help desk</option>
+              <option value="You are a friendly order status assistant. Ask for an order number, confirm the last 2 digits back, and summarize the status in one line.">Order status assistant</option>
+            </select>
+          </div>
+          <button id="usePreset" class="secondary">Use preset</button>
+        </div>
+
+        <label for="instr">Instructions (prompt)</label>
+        <textarea id="instr" placeholder="Add any caller-specific rules here…"></textarea>
+
+        <div class="row">
+          <div>
+            <label for="voice">Voice</label>
+            <select id="voice">
+              <option selected>alloy</option>
+              <option>ash</option><option>ballad</option><option>coral</option>
+              <option>echo</option><option>sage</option><option>shimmer</option><option>verse</option>
+            </select>
+          </div>
+          <div>
+            <label for="phone">Your phone (+15551234567)</label>
+            <input id="phone" placeholder="+15551234567" class="kbd" />
+          </div>
+        </div>
+
+        <div style="display:flex; gap:10px; align-items:center">
+          <button id="callBtn">☎ Call me</button>
+          <span id="msg" class="hint"></span>
+        </div>
+
+        <!-- INBOUND (Accordion; hidden until user expands) -->
+        <div class="accordion sweep" id="inbound" style="margin-top:12px">
+          <button class="acc-head" id="accBtn" aria-expanded="false">
+            <span class="carat">▶</span>
+            I’d rather call in
+          </button>
+          <div class="acc-body" id="accBody">
+            <div style="padding:12px">
+              <div class="panel">
+                <div class="section">Call-in</div>
+                <div class="muted">Dial your Twilio number to reach the app.</div>
+                <div style="margin-top:8px">
+                  <span class="muted">Number:</span>
+                  <span id="callInNumber" class="kbd">—</span>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="section">Generate inbound assets</div>
+                <div class="muted">Create a one-time webhook URL and TwiML Bin for this prompt.</div>
+                <div style="display:flex; gap:10px; margin-top:10px">
+                  <button id="genBtn" class="secondary">✚ Generate</button>
+                  <span id="genMsg" class="hint"></span>
+                </div>
+
+                <div id="results" style="display:none; margin-top:12px">
+                  <div style="margin-bottom:8px"><b>Webhook URL</b> <span class="muted">(POST)</span></div>
+                  <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px">
+                    <input id="webhook" readonly class="kbd" />
+                    <button id="copyWebhook" class="secondary">Copy</button>
+                  </div>
+
+                  <div style="margin-bottom:6px"><b>TwiML Bin XML</b></div>
+                  <div style="display:flex; gap:10px; justify-content:flex-end; margin-bottom:6px">
+                    <button id="copyTwiml" class="secondary">Copy TwiML</button>
+                  </div>
+                  <pre id="twiml" class="code"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div> <!-- /content -->
+    </div>   <!-- /crt-box -->
+  </div>     <!-- /wrap -->
+
+<script>
+const $ = id => document.getElementById(id);
+const setText = (id, v) => ($(id).textContent = v);
+const show = (id, on=true) => ($(id).style.display = on ? "" : "none");
+
+(async function boot(){
+  try {
+    const cfg = await fetch("/api/config").then(r=>r.json());
+    const base = (cfg.baseUrl || location.origin);
+    setText("hostBadge", "host: " + base);
+    $("voice").value = "alloy"; // default
+    setText("callInNumber", cfg.twilioFrom || "— (set TWILIO_FROM in .env)");
+  } catch {}
+})();
+
+$("usePreset").onclick = () => { const v = $("preset").value; if (v) $("instr").value = v; };
+
+$("callBtn").onclick = async () => {
+  const to = $("phone").value.trim();
+  const voice = $("voice").value;
+  const instructions = $("instr").value.trim();
+  if (!instructions) return setText("msg","Enter instructions");
+  if (!/^\+\d{10,15}$/.test(to)) return setText("msg","Phone must be +E164");
+
+  $("callBtn").disabled = true;
+  setText("msg","dialing…");
+  try {
+    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, voice }) }).then(r=>r.json());
+    if (!p.promptId) throw new Error(p.error || "No promptId");
+    const c = await fetch("/api/call", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ to, promptId: p.promptId }) }).then(r=>r.json());
+    if (!c.ok) throw new Error(c.error || "Call failed");
+    setText("msg","Call placed!");
+  } catch(e) {
+    setText("msg", e.message || "error");
+  } finally {
+    $("callBtn").disabled = false;
+  }
+};
+
+/* Accordion behavior */
+const accBtn = $("accBtn");
+const accBody = $("accBody");
+const accWrap = $("inbound");
+accBtn.onclick = () => {
+  const expanded = accBtn.getAttribute("aria-expanded") === "true";
+  accBtn.setAttribute("aria-expanded", String(!expanded));
+  accBody.classList.toggle("open", !expanded);
+  accWrap.classList.remove("sweep","run");
+  void accWrap.offsetWidth; // reflow
+  accWrap.classList.add("sweep","run");
+};
+
+/* Generate inbound assets (on demand) */
+$("genBtn").onclick = async () => {
+  const voice = $("voice").value;
+  const instructions = $("instr").value.trim();
+  if (!instructions) return setText("genMsg","Enter instructions");
+
+  $("genBtn").disabled = true;
+  setText("genMsg","generating…");
+  try {
+    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, voice }) }).then(r=>r.json());
+    if (!p.promptId) throw new Error(p.error || "No promptId");
+
+    const cfg = await fetch("/api/config").then(r=>r.json());
+    const base = (cfg.baseUrl || location.origin).replace(/\/$/,"");
+    const webhookUrl = `${base}/twiml?promptId=${encodeURIComponent(p.promptId)}`;
+    $("webhook").value = webhookUrl;
+
+    const streamUrl = `wss://${base.replace(/^https?:\/\//,"")}/stream`;
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${streamUrl}">
+      <Parameter name="promptId" value="${p.promptId}"/>
+      <Parameter name="voice" value="${voice}"/>
+    </Stream>
+  </Connect>
+  <Pause length="3600"/>
+</Response>`;
+    $("twiml").textContent = xml;
+
+    show("results", true);
+    setText("genMsg","");
+  } catch(e) {
+    setText("genMsg", e.message || "error");
+  } finally {
+    $("genBtn").disabled = false;
+  }
+};
+
+$("copyWebhook").onclick = async () => {
+  try { await navigator.clipboard.writeText($("webhook").value); setText("genMsg","Copied URL"); setTimeout(()=>setText("genMsg",""),1200); }
+  catch { setText("genMsg","Copy failed"); }
+};
+$("copyTwiml").onclick = async () => {
+  try { await navigator.clipboard.writeText($("twiml").textContent); setText("genMsg","Copied TwiML"); setTimeout(()=>setText("genMsg",""),1200); }
+  catch { setText("genMsg","Copy failed"); }
+};
+</script>
+</body>
+</html>
