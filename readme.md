@@ -4,13 +4,12 @@ A tiny starter that lets anyone paste **custom instructions**, choose a **voice*
 
 ## Prereqs
 - Node 20+
-- An OpenAI API key
-- ngrok account (recommended)
-- Twilio account + a voice-enabled number (only if you want outbound calls)
+- OpenAI API key
+- ngrok CLI (v3+): `brew install ngrok && ngrok config add-authtoken <TOKEN>`
+- Twilio account + voice-enabled number (required for outbound and phone call-in)
 
 ## Setup
 ```bash
-cp .env.example .env   # or run the interactive setup
-npm run setup          # guided prompts for OpenAI/Twilio/ngrok
+cp .env.example .env   # or: npm run setup (guided)
 npm i
-npm run start:ngrok
+npm run start:ngrok    # prints the public https URL; open it
