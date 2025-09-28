@@ -194,6 +194,18 @@ server.on("upgrade", (req, socket, head) => {
   socket.destroy();
 });
 
+const broadcastTranscriptStatus = (status, extra = {}) => {
+  if (!status) return;
+  const msg = JSON.stringify({ type: "status", status, ...extra });
+  for (const client of transcriptClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(msg);
+      } catch {}
+    }
+  }
+};
+
 transcriptWss.on("connection", (client) => {
   transcriptClients.add(client);
   try {
@@ -268,11 +280,16 @@ twilioWss.on("connection", async (twilioWs) => {
   log("info", "Twilio connected to /stream");
   let openaiWs;
   let streamSid = null;
+  let callActive = false;
 
   const safeClose = (why) => {
     log("info", "Closing bridge:", why || "");
     try { twilioWs?.close(); } catch {}
     try { openaiWs?.close(); } catch {}
+    if (callActive) {
+      callActive = false;
+      broadcastTranscriptStatus("call_finished", { streamSid });
+    }
   };
 
   // Twilio -> Server
@@ -303,6 +320,9 @@ twilioWss.on("connection", async (twilioWs) => {
         log("error", "OpenAI connect failed:", e.message);
         return safeClose("openai_connect_error");
       }
+
+      callActive = true;
+      broadcastTranscriptStatus("call_started", { streamSid });
 
       // OpenAI -> Twilio
       openaiWs.on("message", (raw) => {
