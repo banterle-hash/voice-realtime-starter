@@ -39,10 +39,22 @@ const TRANSCRIPTION_MODEL_ALLOWLIST = new Set(
   parseCsv(process.env.OPENAI_TRANSCRIPTION_MODELS || "")
 );
 
+const NOISE_SUPPRESSION_MODEL_ALLOWLIST = new Set(
+  parseCsv(process.env.OPENAI_NOISE_SUPPRESSION_MODELS || "")
+);
+
 const modelSupportsInputAudioTranscription = (model) => {
   if (!model) return false;
   if (TRANSCRIPTION_MODEL_ALLOWLIST.size > 0) {
     return TRANSCRIPTION_MODEL_ALLOWLIST.has(model);
+  }
+  return /^gpt-4o-realtime-preview/.test(model);
+};
+
+const modelSupportsNoiseSuppression = (model) => {
+  if (!model) return false;
+  if (NOISE_SUPPRESSION_MODEL_ALLOWLIST.size > 0) {
+    return NOISE_SUPPRESSION_MODEL_ALLOWLIST.has(model);
   }
   return /^gpt-4o-realtime-preview/.test(model);
 };
@@ -263,6 +275,7 @@ async function connectOpenAI(instructions, voice) {
 
   const supportsInputTranscription =
     modelSupportsInputAudioTranscription(OPENAI_MODEL);
+  const supportsNoiseSuppression = modelSupportsNoiseSuppression(OPENAI_MODEL);
 
   const sessionUpdate = {
     type: "session.update",
@@ -275,7 +288,6 @@ async function connectOpenAI(instructions, voice) {
         input: {
           // Twilio sends 8kHz PCMU μ-law
           format: { type: "audio/pcmu" },
-          noise_suppression: { amount: "default" },
           // Turn-taking: a bit more sensitive + longer silence before response
           turn_detection: {
             type: "server_vad",
@@ -292,6 +304,15 @@ async function connectOpenAI(instructions, voice) {
       }
     }
   };
+
+  if (supportsNoiseSuppression) {
+    sessionUpdate.session.audio.input.noise_suppression = { amount: "default" };
+  } else {
+    log(
+      "debug",
+      `Model ${OPENAI_MODEL} does not support noise_suppression; skipping.`
+    );
+  }
 
   if (supportsInputTranscription) {
     sessionUpdate.session.input_audio_transcription = {
