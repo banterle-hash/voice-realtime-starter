@@ -167,12 +167,32 @@ app.all("/twiml", (req, res) => {
 });
 
 // --- 4) WS bridge: Twilio <Stream> ↔ OpenAI Realtime
-const wss = new WebSocketServer({ server, path: "/stream" });
-wss.on("error", (e) => log("error", "WSS error:", e.message));
+const twilioWss = new WebSocketServer({ noServer: true });
+twilioWss.on("error", (e) => log("error", "WSS error:", e.message));
 
 // Browser clients subscribe here for live transcripts
 const transcriptClients = new Set();
-const transcriptWss = new WebSocketServer({ server, path: "/transcripts" });
+const transcriptWss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  const { pathname } = new URL(req.url || "/", "http://localhost");
+
+  if (pathname === "/stream") {
+    twilioWss.handleUpgrade(req, socket, head, (ws) => {
+      twilioWss.emit("connection", ws, req);
+    });
+    return;
+  }
+
+  if (pathname === "/transcripts") {
+    transcriptWss.handleUpgrade(req, socket, head, (ws) => {
+      transcriptWss.emit("connection", ws, req);
+    });
+    return;
+  }
+
+  socket.destroy();
+});
 
 transcriptWss.on("connection", (client) => {
   transcriptClients.add(client);
@@ -244,7 +264,7 @@ async function connectOpenAI(instructions, voice) {
   return oa;
 }
 
-wss.on("connection", async (twilioWs) => {
+twilioWss.on("connection", async (twilioWs) => {
   log("info", "Twilio connected to /stream");
   let openaiWs;
   let streamSid = null;
