@@ -16,6 +16,8 @@ const PORT = parseInt(process.env.PORT || "8080", 10);
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-realtime";
+const OPENAI_TRANSCRIPTION_MODEL =
+  process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
 const DEFAULT_VOICE = process.env.OPENAI_VOICE || "alloy";
 const APP_BASE_URL = process.env.APP_BASE_URL || ""; // set by tunnel or CLI script
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
@@ -26,6 +28,24 @@ const twilioClient =
   TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
     ? twilioPkg(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     : null;
+
+const parseCsv = (value = "") =>
+  value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+const TRANSCRIPTION_MODEL_ALLOWLIST = new Set(
+  parseCsv(process.env.OPENAI_TRANSCRIPTION_MODELS || "")
+);
+
+const modelSupportsInputAudioTranscription = (model) => {
+  if (!model) return false;
+  if (TRANSCRIPTION_MODEL_ALLOWLIST.size > 0) {
+    return TRANSCRIPTION_MODEL_ALLOWLIST.has(model);
+  }
+  return /^gpt-4o-realtime-preview/.test(model);
+};
 
 // --- logging helper
 const log = (level, ...args) => {
@@ -248,9 +268,6 @@ async function connectOpenAI(instructions, voice) {
       model: OPENAI_MODEL,
       output_modalities: ["audio"],
       instructions: finalInstructions,
-      input_audio_transcription: {
-        model: "gpt-4o-mini-transcribe"
-      },
       audio: {
         input: {
           // Twilio sends 8kHz PCMU μ-law
@@ -272,6 +289,17 @@ async function connectOpenAI(instructions, voice) {
       }
     }
   };
+
+  if (modelSupportsInputAudioTranscription(OPENAI_MODEL)) {
+    sessionUpdate.session.input_audio_transcription = {
+      model: OPENAI_TRANSCRIPTION_MODEL
+    };
+  } else {
+    log(
+      "debug",
+      `Model ${OPENAI_MODEL} does not support input_audio_transcription; skipping.`
+    );
+  }
 
   oa.send(JSON.stringify(sessionUpdate));
   // Optional: Kick off a greeting if your base/preset expects it
