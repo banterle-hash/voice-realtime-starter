@@ -170,6 +170,31 @@ app.all("/twiml", (req, res) => {
 const wss = new WebSocketServer({ server, path: "/stream" });
 wss.on("error", (e) => log("error", "WSS error:", e.message));
 
+// Browser clients subscribe here for live transcripts
+const transcriptClients = new Set();
+const transcriptWss = new WebSocketServer({ server, path: "/transcripts" });
+
+transcriptWss.on("connection", (client) => {
+  transcriptClients.add(client);
+  try {
+    client.send(JSON.stringify({ type: "status", status: "connected" }));
+  } catch {}
+
+  client.on("close", () => transcriptClients.delete(client));
+  client.on("error", () => transcriptClients.delete(client));
+});
+
+transcriptWss.on("error", (e) => log("error", "Transcript WSS error:", e.message));
+
+const broadcastTranscript = (payload) => {
+  const msg = JSON.stringify({ type: "transcript", ...payload });
+  for (const client of transcriptClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      try { client.send(msg); } catch {}
+    }
+  }
+};
+
 async function connectOpenAI(instructions, voice) {
   // Compose final instructions: Base Rules + user preset
   const finalInstructions = composeInstructions(instructions);
@@ -271,6 +296,56 @@ wss.on("connection", async (twilioWs) => {
         }
         if (t === "response.output_audio.done" && streamSid) {
           twilioWs.send(JSON.stringify({ event: "mark", streamSid, mark: { name: `response_done_${Date.now()}` } }));
+          return;
+        }
+
+        // Live transcription events for the browser UI
+        if (t === "response.output_text.delta" && msg.delta) {
+          broadcastTranscript({
+            role: "agent",
+            id: msg.response?.id || msg.response_id || msg.id,
+            text: msg.delta,
+            append: true
+          });
+          return;
+        }
+        if (t === "response.output_text.done") {
+          broadcastTranscript({
+            role: "agent",
+            id: msg.response?.id || msg.response_id || msg.id,
+            final: true
+          });
+          return;
+        }
+        if (
+          (t === "response.input_audio_transcription.delta" ||
+            t === "input_audio_buffer.transcription.delta") &&
+          (msg.delta || msg.transcript)
+        ) {
+          broadcastTranscript({
+            role: "user",
+            id: msg.response?.id || msg.response_id || msg.item_id || msg.id,
+            text: msg.delta || msg.transcript,
+            append: true
+          });
+          return;
+        }
+        if (
+          t === "response.input_audio_transcription.completed" ||
+          t === "input_audio_buffer.transcription.completed"
+        ) {
+          const text =
+            msg.transcription?.text ||
+            msg.response?.input_audio_transcription?.text ||
+            msg.text ||
+            "";
+          broadcastTranscript({
+            role: "user",
+            id: msg.response?.id || msg.response_id || msg.item_id || msg.id,
+            text,
+            append: text ? false : undefined,
+            final: true
+          });
           return;
         }
         if (t === "error") {
