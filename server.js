@@ -16,8 +16,6 @@ const PORT = parseInt(process.env.PORT || "8080", 10);
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-realtime";
-const OPENAI_TRANSCRIPTION_MODEL =
-  process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
 const DEFAULT_VOICE = process.env.OPENAI_VOICE || "alloy";
 const APP_BASE_URL = process.env.APP_BASE_URL || ""; // set by tunnel or CLI script
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
@@ -28,36 +26,6 @@ const twilioClient =
   TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
     ? twilioPkg(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     : null;
-
-const parseCsv = (value = "") =>
-  value
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-const TRANSCRIPTION_MODEL_ALLOWLIST = new Set(
-  parseCsv(process.env.OPENAI_TRANSCRIPTION_MODELS || "")
-);
-
-const NOISE_SUPPRESSION_MODEL_ALLOWLIST = new Set(
-  parseCsv(process.env.OPENAI_NOISE_SUPPRESSION_MODELS || "")
-);
-
-const modelSupportsInputAudioTranscription = (model) => {
-  if (!model) return false;
-  if (TRANSCRIPTION_MODEL_ALLOWLIST.size > 0) {
-    return TRANSCRIPTION_MODEL_ALLOWLIST.has(model);
-  }
-  return /^gpt-4o-realtime-preview/.test(model);
-};
-
-const modelSupportsNoiseSuppression = (model) => {
-  if (!model) return false;
-  if (NOISE_SUPPRESSION_MODEL_ALLOWLIST.size > 0) {
-    return NOISE_SUPPRESSION_MODEL_ALLOWLIST.has(model);
-  }
-  return /^gpt-4o-realtime-preview/.test(model);
-};
 
 // --- logging helper
 const log = (level, ...args) => {
@@ -199,65 +167,8 @@ app.all("/twiml", (req, res) => {
 });
 
 // --- 4) WS bridge: Twilio <Stream> ↔ OpenAI Realtime
-const twilioWss = new WebSocketServer({ noServer: true });
-twilioWss.on("error", (e) => log("error", "WSS error:", e.message));
-
-// Browser clients subscribe here for live transcripts
-const transcriptClients = new Set();
-const transcriptWss = new WebSocketServer({ noServer: true });
-
-server.on("upgrade", (req, socket, head) => {
-  const { pathname } = new URL(req.url || "/", "http://localhost");
-
-  if (pathname === "/stream") {
-    twilioWss.handleUpgrade(req, socket, head, (ws) => {
-      twilioWss.emit("connection", ws, req);
-    });
-    return;
-  }
-
-  if (pathname === "/transcripts") {
-    transcriptWss.handleUpgrade(req, socket, head, (ws) => {
-      transcriptWss.emit("connection", ws, req);
-    });
-    return;
-  }
-
-  socket.destroy();
-});
-
-const broadcastTranscriptStatus = (status, extra = {}) => {
-  if (!status) return;
-  const msg = JSON.stringify({ type: "status", status, ...extra });
-  for (const client of transcriptClients) {
-    if (client.readyState === WebSocket.OPEN) {
-      try {
-        client.send(msg);
-      } catch {}
-    }
-  }
-};
-
-transcriptWss.on("connection", (client) => {
-  transcriptClients.add(client);
-  try {
-    client.send(JSON.stringify({ type: "status", status: "connected" }));
-  } catch {}
-
-  client.on("close", () => transcriptClients.delete(client));
-  client.on("error", () => transcriptClients.delete(client));
-});
-
-transcriptWss.on("error", (e) => log("error", "Transcript WSS error:", e.message));
-
-const broadcastTranscript = (payload) => {
-  const msg = JSON.stringify({ type: "transcript", ...payload });
-  for (const client of transcriptClients) {
-    if (client.readyState === WebSocket.OPEN) {
-      try { client.send(msg); } catch {}
-    }
-  }
-};
+const wss = new WebSocketServer({ server, path: "/stream" });
+wss.on("error", (e) => log("error", "WSS error:", e.message));
 
 async function connectOpenAI(instructions, voice) {
   // Compose final instructions: Base Rules + user preset
@@ -272,10 +183,6 @@ async function connectOpenAI(instructions, voice) {
     oa.once("open", resolve);
     oa.once("error", reject);
   });
-
-  const supportsInputTranscription =
-    modelSupportsInputAudioTranscription(OPENAI_MODEL);
-  const supportsNoiseSuppression = modelSupportsNoiseSuppression(OPENAI_MODEL);
 
   const sessionUpdate = {
     type: "session.update",
@@ -305,26 +212,6 @@ async function connectOpenAI(instructions, voice) {
     }
   };
 
-  if (supportsNoiseSuppression) {
-    sessionUpdate.session.audio.input.noise_suppression = { amount: "default" };
-  } else {
-    log(
-      "debug",
-      `Model ${OPENAI_MODEL} does not support noise_suppression; skipping.`
-    );
-  }
-
-  if (supportsInputTranscription) {
-    sessionUpdate.session.input_audio_transcription = {
-      model: OPENAI_TRANSCRIPTION_MODEL
-    };
-  } else {
-    log(
-      "debug",
-      `Model ${OPENAI_MODEL} does not support input_audio_transcription; skipping.`
-    );
-  }
-
   oa.send(JSON.stringify(sessionUpdate));
   // Optional: Kick off a greeting if your base/preset expects it
   oa.send(JSON.stringify({ type: "response.create" }));
@@ -332,68 +219,15 @@ async function connectOpenAI(instructions, voice) {
   return oa;
 }
 
-twilioWss.on("connection", async (twilioWs) => {
+wss.on("connection", async (twilioWs) => {
   log("info", "Twilio connected to /stream");
   let openaiWs;
   let streamSid = null;
-  let callActive = false;
-  const userTranscriptionPartials = new Map();
-
-  const textFrom = (value) => {
-    if (!value) return "";
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) return value.map((v) => textFrom(v)).join("");
-    if (typeof value === "object") {
-      if (typeof value.text === "string") return value.text;
-      if (typeof value.transcript === "string") return value.transcript;
-      if (typeof value.delta === "string") return value.delta;
-      if (typeof value.content === "string") return value.content;
-      if (typeof value.value === "string") return value.value;
-    }
-    return "";
-  };
-
-  const userKeyFor = (itemId, contentIndex = 0) =>
-    `${itemId || "user"}:${contentIndex ?? 0}`;
-
-  const pushUserTranscriptDelta = ({ itemId, fallbackId, contentIndex = 0, chunk }) => {
-    if (!chunk) return;
-    const key = userKeyFor(itemId || fallbackId, contentIndex);
-    const existing = userTranscriptionPartials.get(key);
-    const id = existing?.id || itemId || fallbackId || key;
-    const text = (existing?.text || "") + chunk;
-    userTranscriptionPartials.set(key, { id, text });
-    broadcastTranscript({ role: "user", id, text: chunk, append: true });
-  };
-
-  const finalizeUserTranscript = ({
-    itemId,
-    fallbackId,
-    contentIndex = 0,
-    finalText
-  }) => {
-    const key = userKeyFor(itemId || fallbackId, contentIndex);
-    const existing = userTranscriptionPartials.get(key);
-    const id = existing?.id || itemId || fallbackId || key;
-    const text = finalText || existing?.text || "";
-    userTranscriptionPartials.delete(key);
-    const payload = { role: "user", id, final: true };
-    if (text) {
-      payload.text = text;
-      payload.append = false;
-    }
-    broadcastTranscript(payload);
-  };
 
   const safeClose = (why) => {
     log("info", "Closing bridge:", why || "");
     try { twilioWs?.close(); } catch {}
     try { openaiWs?.close(); } catch {}
-    userTranscriptionPartials.clear();
-    if (callActive) {
-      callActive = false;
-      broadcastTranscriptStatus("call_finished", { streamSid });
-    }
   };
 
   // Twilio -> Server
@@ -425,9 +259,6 @@ twilioWss.on("connection", async (twilioWs) => {
         return safeClose("openai_connect_error");
       }
 
-      callActive = true;
-      broadcastTranscriptStatus("call_started", { streamSid });
-
       // OpenAI -> Twilio
       openaiWs.on("message", (raw) => {
         let msg; try { msg = JSON.parse(raw.toString()); } catch { return; }
@@ -440,112 +271,6 @@ twilioWss.on("connection", async (twilioWs) => {
         }
         if (t === "response.output_audio.done" && streamSid) {
           twilioWs.send(JSON.stringify({ event: "mark", streamSid, mark: { name: `response_done_${Date.now()}` } }));
-          return;
-        }
-
-        // Live transcription events for the browser UI
-        if (t === "response.output_text.delta" && msg.delta) {
-          broadcastTranscript({
-            role: "agent",
-            id: msg.response?.id || msg.response_id || msg.id,
-            text: msg.delta,
-            append: true
-          });
-          return;
-        }
-        if (t === "response.output_text.done") {
-          broadcastTranscript({
-            role: "agent",
-            id: msg.response?.id || msg.response_id || msg.id,
-            final: true
-          });
-          return;
-        }
-        if (
-          t === "conversation.item.input_audio_transcription.delta"
-        ) {
-          const itemId = msg.item_id || msg.itemId;
-          const contentIndex = msg.content_index ?? msg.contentIndex ?? 0;
-          const chunk =
-            textFrom(msg.delta) ||
-            textFrom(msg.transcript) ||
-            textFrom(msg.text);
-          const fallbackId =
-            msg.response?.id ||
-            msg.response_id ||
-            msg.id;
-          pushUserTranscriptDelta({
-            itemId,
-            contentIndex,
-            chunk,
-            fallbackId
-          });
-          return;
-        }
-        if (
-          t === "conversation.item.input_audio_transcription.completed"
-        ) {
-          const itemId = msg.item_id || msg.itemId;
-          const contentIndex = msg.content_index ?? msg.contentIndex ?? 0;
-          const finalText =
-            textFrom(msg.transcript) ||
-            textFrom(msg.text) ||
-            textFrom(msg.delta);
-          const fallbackId =
-            msg.response?.id ||
-            msg.response_id ||
-            msg.id;
-          finalizeUserTranscript({
-            itemId,
-            contentIndex,
-            finalText,
-            fallbackId
-          });
-          return;
-        }
-        if (
-          (t === "response.input_audio_transcription.delta" ||
-            t === "input_audio_buffer.transcription.delta") &&
-          (msg.delta || msg.transcript)
-        ) {
-          const chunk =
-            textFrom(msg.delta) ||
-            textFrom(msg.transcript) ||
-            textFrom(msg.text);
-          const fallbackId =
-            msg.response?.id ||
-            msg.response_id ||
-            msg.item_id ||
-            msg.id;
-          pushUserTranscriptDelta({
-            itemId: msg.item_id,
-            contentIndex: msg.content_index ?? msg.contentIndex ?? 0,
-            chunk,
-            fallbackId
-          });
-          return;
-        }
-        if (
-          t === "response.input_audio_transcription.completed" ||
-          t === "input_audio_buffer.transcription.completed"
-        ) {
-          const fallbackId =
-            msg.response?.id ||
-            msg.response_id ||
-            msg.item_id ||
-            msg.id;
-          const text =
-            msg.transcription?.text ||
-            msg.response?.input_audio_transcription?.text ||
-            textFrom(msg.transcript) ||
-            textFrom(msg.text) ||
-            textFrom(msg.delta);
-          finalizeUserTranscript({
-            itemId: msg.item_id,
-            contentIndex: msg.content_index ?? msg.contentIndex ?? 0,
-            finalText: text,
-            fallbackId
-          });
           return;
         }
         if (t === "error") {

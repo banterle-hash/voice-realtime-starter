@@ -49,17 +49,11 @@
   button:disabled{opacity:.6; cursor:not-allowed}
   .panel{padding:12px; border:1px dashed #26303a; border-radius:8px; background:#0a0d11}
   .section{color:#a7e8a7; margin:2px 0 8px; font-weight:900; letter-spacing:.5px}
-  .subsection{color:#9ad39a; margin-bottom:6px; font-weight:800; font-size:12px; text-transform:uppercase; letter-spacing:.4px}
   .muted{color:#7aa07a}
   .hint{color:#7aa07a}
   .kbd{display:inline-block; padding:4px 8px; background:#0d1215; border:1px solid #26323a; border-radius:6px; font-weight:700; font-size:12px}
   .code{background:#0a0d10; line-height:1.45; white-space:pre; overflow:auto}
   .badge{display:inline-block; padding:2px 8px; border:1px solid #244; border-radius:999px; font-size:12px; color:#a6cfa6; background:#0b1012}
-  .transcript-grid{display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); align-items:start}
-  .transcript-stream{min-height:140px; border:1px solid #1f252d; border-radius:6px; padding:10px; background:#080b0f; font-size:13px; line-height:1.45; white-space:pre-wrap; word-break:break-word}
-  .transcript-line{margin-bottom:8px; opacity:.85; transition:opacity .3s ease}
-  .transcript-line.final{opacity:1}
-  .transcript-line::before{content:""; display:block; height:2px; width:24px; margin-bottom:6px; background:linear-gradient(90deg, rgba(54,211,153,.2), transparent)}
   /* retro accordion */
   .accordion {border:1px solid var(--border); border-radius:8px; background:#0b0e12;}
   .acc-head{
@@ -177,21 +171,6 @@
           </div>
         </div>
 
-        <div class="panel" id="transcriptPanel" style="margin-top:16px">
-          <div class="section">Live transcription</div>
-          <div class="muted" id="transcriptStatus">Waiting for connection…</div>
-          <div class="transcript-grid" style="margin-top:12px">
-            <div>
-              <div class="subsection">Caller</div>
-              <div id="userTranscript" class="transcript-stream"></div>
-            </div>
-            <div>
-              <div class="subsection">Agent</div>
-              <div id="agentTranscript" class="transcript-stream"></div>
-            </div>
-          </div>
-        </div>
-
       </div> <!-- /content -->
     </div>   <!-- /crt-box -->
   </div>     <!-- /wrap -->
@@ -228,7 +207,6 @@ $("callBtn").onclick = async () => {
     const c = await fetch("/api/call", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ to, promptId: p.promptId }) }).then(r=>r.json());
     if (!c.ok) throw new Error(c.error || "Call failed");
     setText("msg","Call placed!");
-    openTranscriptStream();
   } catch(e) {
     setText("msg", e.message || "error");
   } finally {
@@ -296,158 +274,6 @@ $("copyTwiml").onclick = async () => {
   try { await navigator.clipboard.writeText($("twiml").textContent); setText("genMsg","Copied TwiML"); setTimeout(()=>setText("genMsg",""),1200); }
   catch { setText("genMsg","Copy failed"); }
 };
-
-/* Live transcript UI */
-const transcriptContainers = {
-  user: $("userTranscript"),
-  agent: $("agentTranscript")
-};
-const transcriptState = {
-  user: { entries: new Map(), lastId: null },
-  agent: { entries: new Map(), lastId: null }
-};
-const transcriptStatus = $("transcriptStatus");
-let transcriptRetry;
-let transcriptSocket = null;
-let transcriptSocketId = 0;
-let transcriptShouldReconnect = false;
-let transcriptClosedMessage = "Waiting for connection…";
-
-function resetTranscriptUI() {
-  Object.values(transcriptState).forEach((store) => {
-    store.entries.clear();
-    store.lastId = null;
-  });
-  Object.values(transcriptContainers).forEach((el) => {
-    while (el.firstChild) el.removeChild(el.firstChild);
-  });
-}
-
-function renderTranscript(role, id, text, { append = true, final = false } = {}) {
-  const container = transcriptContainers[role];
-  if (!container) return;
-
-  const store = transcriptState[role];
-  let key = id;
-  if (!key) {
-    key = append && store.lastId ? store.lastId : `${role}-${Date.now()}`;
-  }
-
-  let entry = store.entries.get(key);
-  if (!entry) {
-    const el = document.createElement("div");
-    el.className = "transcript-line";
-    container.appendChild(el);
-    entry = { el, text: "" };
-    store.entries.set(key, entry);
-  }
-
-  if (typeof text === "string" && text.length) {
-    entry.text = append ? entry.text + text : text;
-    entry.el.textContent = entry.text.trim();
-  }
-
-  if (final) entry.el.classList.add("final");
-
-  store.lastId = key;
-}
-
-function connectTranscriptStream() {
-  clearTimeout(transcriptRetry);
-  const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${scheme}://${location.host}/transcripts`);
-  const thisId = ++transcriptSocketId;
-  transcriptSocket = ws;
-  transcriptClosedMessage = "Waiting for connection…";
-  transcriptStatus.textContent = "Connecting to transcription…";
-
-  ws.onopen = () => {
-    if (transcriptSocketId !== thisId) return;
-    resetTranscriptUI();
-    transcriptStatus.textContent = "Live transcription active.";
-  };
-
-  ws.onclose = () => {
-    if (transcriptSocketId !== thisId) return;
-    transcriptSocket = null;
-    resetTranscriptUI();
-    const message = transcriptShouldReconnect
-      ? "Disconnected. Reconnecting…"
-      : transcriptClosedMessage || "Waiting for connection…";
-    transcriptStatus.textContent = message;
-    if (transcriptShouldReconnect) {
-      transcriptRetry = setTimeout(() => {
-        if (!transcriptSocket && transcriptShouldReconnect) {
-          connectTranscriptStream();
-        }
-      }, 2500);
-    } else {
-      transcriptClosedMessage = "Waiting for connection…";
-    }
-  };
-
-  ws.onerror = () => {
-    if (transcriptSocketId !== thisId) return;
-    transcriptStatus.textContent = "Transcription connection error.";
-  };
-
-  ws.onmessage = (event) => {
-    if (transcriptSocketId !== thisId) return;
-    let data;
-    try { data = JSON.parse(event.data); } catch { return; }
-    if (data.type === "status") {
-      const status = data.status;
-      if (!status) return;
-      if (status === "connected") {
-        transcriptStatus.textContent = transcriptSocket
-          ? "Live transcription ready."
-          : "Waiting for connection…";
-      } else if (status === "call_started") {
-        openTranscriptStream();
-      } else if (status === "call_finished") {
-        closeTranscriptStream("Call finished.");
-      } else {
-        transcriptStatus.textContent = status;
-      }
-      return;
-    }
-    if (data.type !== "transcript" || !data.role) return;
-    renderTranscript(data.role === "agent" ? "agent" : "user", data.id, data.text, {
-      append: data.append !== false,
-      final: Boolean(data.final)
-    });
-  };
-
-  return ws;
-}
-
-function openTranscriptStream() {
-  transcriptShouldReconnect = true;
-  transcriptClosedMessage = "Waiting for connection…";
-  if (
-    transcriptSocket &&
-    (transcriptSocket.readyState === WebSocket.OPEN ||
-      transcriptSocket.readyState === WebSocket.CONNECTING)
-  ) {
-    return transcriptSocket;
-  }
-  return connectTranscriptStream();
-}
-
-function closeTranscriptStream(message = "Waiting for connection…") {
-  transcriptShouldReconnect = false;
-  transcriptClosedMessage = message;
-  clearTimeout(transcriptRetry);
-  if (!transcriptSocket || transcriptSocket.readyState === WebSocket.CLOSED) {
-    resetTranscriptUI();
-    transcriptStatus.textContent = message;
-    return;
-  }
-  try { transcriptSocket.close(); } catch {}
-}
-
-window.openTranscriptStream = openTranscriptStream;
-window.closeTranscriptStream = closeTranscriptStream;
 </script>
 </body>
 </html>
