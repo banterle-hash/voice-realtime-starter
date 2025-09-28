@@ -178,7 +178,7 @@
         </div>
 
         <div class="panel" id="transcriptPanel" style="margin-top:16px">
-          <div class="section">Live transcription</div>
+          <div class="section">Transcription</div>
           <div class="muted" id="transcriptStatus">Waiting for connection…</div>
           <div class="transcript-grid" style="margin-top:12px">
             <div>
@@ -312,6 +312,7 @@ let transcriptSocket = null;
 let transcriptSocketId = 0;
 let transcriptShouldReconnect = false;
 let transcriptClosedMessage = "Waiting for connection…";
+let preserveTranscriptOnClose = false;
 
 function resetTranscriptUI() {
   Object.values(transcriptState).forEach((store) => {
@@ -364,13 +365,16 @@ function connectTranscriptStream() {
   ws.onopen = () => {
     if (transcriptSocketId !== thisId) return;
     resetTranscriptUI();
-    transcriptStatus.textContent = "Live transcription active.";
+    transcriptStatus.textContent = "Transcription channel active.";
+    preserveTranscriptOnClose = false;
   };
 
   ws.onclose = () => {
     if (transcriptSocketId !== thisId) return;
     transcriptSocket = null;
-    resetTranscriptUI();
+    if (!preserveTranscriptOnClose) {
+      resetTranscriptUI();
+    }
     const message = transcriptShouldReconnect
       ? "Disconnected. Reconnecting…"
       : transcriptClosedMessage || "Waiting for connection…";
@@ -400,12 +404,24 @@ function connectTranscriptStream() {
       if (!status) return;
       if (status === "connected") {
         transcriptStatus.textContent = transcriptSocket
-          ? "Live transcription ready."
+          ? "Transcription ready."
           : "Waiting for connection…";
       } else if (status === "call_started") {
         openTranscriptStream();
+        preserveTranscriptOnClose = false;
+      } else if (status === "post_call_processing") {
+        transcriptStatus.textContent = "Generating post-call transcription…";
+        preserveTranscriptOnClose = true;
+      } else if (status === "post_call_transcript_ready") {
+        transcriptStatus.textContent = "Post-call transcription ready.";
+        preserveTranscriptOnClose = true;
+      } else if (status === "post_call_transcription_failed") {
+        transcriptStatus.textContent = "Post-call transcription unavailable.";
+        preserveTranscriptOnClose = true;
       } else if (status === "call_finished") {
-        closeTranscriptStream("Call finished.");
+        transcriptShouldReconnect = false;
+        transcriptClosedMessage = "Call finished.";
+        transcriptStatus.textContent = "Call finished.";
       } else {
         transcriptStatus.textContent = status;
       }
@@ -424,6 +440,7 @@ function connectTranscriptStream() {
 function openTranscriptStream() {
   transcriptShouldReconnect = true;
   transcriptClosedMessage = "Waiting for connection…";
+  preserveTranscriptOnClose = false;
   if (
     transcriptSocket &&
     (transcriptSocket.readyState === WebSocket.OPEN ||
@@ -437,6 +454,7 @@ function openTranscriptStream() {
 function closeTranscriptStream(message = "Waiting for connection…") {
   transcriptShouldReconnect = false;
   transcriptClosedMessage = message;
+  preserveTranscriptOnClose = false;
   clearTimeout(transcriptRetry);
   if (!transcriptSocket || transcriptSocket.readyState === WebSocket.CLOSED) {
     resetTranscriptUI();

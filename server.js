@@ -7,6 +7,7 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import crypto from "crypto";
 import twilioPkg from "twilio";
+import { Blob } from "buffer";
 
 const app = express();
 const server = http.createServer(app);
@@ -16,6 +17,8 @@ const PORT = parseInt(process.env.PORT || "8080", 10);
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-realtime";
+const OPENAI_TRANSCRIPTION_MODEL =
+  process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
 const DEFAULT_VOICE = process.env.OPENAI_VOICE || "alloy";
 const APP_BASE_URL = process.env.APP_BASE_URL || ""; // set by tunnel or CLI script
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
@@ -26,6 +29,125 @@ const twilioClient =
   TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
     ? twilioPkg(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     : null;
+
+const parseCsv = (value = "") =>
+  value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+const TRANSCRIPTION_MODEL_ALLOWLIST = new Set(
+  parseCsv(process.env.OPENAI_TRANSCRIPTION_MODELS || "")
+);
+
+const modelSupportsInputAudioTranscription = (model) => {
+  if (!model) return false;
+  if (TRANSCRIPTION_MODEL_ALLOWLIST.size > 0) {
+    return TRANSCRIPTION_MODEL_ALLOWLIST.has(model);
+  }
+  return /^gpt-4o-realtime-preview/.test(model);
+};
+
+const MULAW_BIAS = 0x84;
+const SAMPLE_RATE_HZ = 8000;
+
+const decodeMuLawSample = (value) => {
+  const mu = ~value & 0xff;
+  const sign = mu & 0x80;
+  const exponent = (mu & 0x70) >> 4;
+  const mantissa = mu & 0x0f;
+  let sample = ((mantissa << 4) + 0x08) << (exponent + 3);
+  sample -= MULAW_BIAS;
+  if (sign) sample = -sample;
+  if (sample > 32767) sample = 32767;
+  if (sample < -32768) sample = -32768;
+  return sample;
+};
+
+const decodeMuLawBase64ToPcm16 = (base64) => {
+  if (!base64) return null;
+  const muLawBuffer = Buffer.from(base64, "base64");
+  const pcmBuffer = Buffer.allocUnsafe(muLawBuffer.length * 2);
+  for (let i = 0; i < muLawBuffer.length; i += 1) {
+    const sample = decodeMuLawSample(muLawBuffer[i]);
+    pcmBuffer.writeInt16LE(sample, i * 2);
+  }
+  return pcmBuffer;
+};
+
+const createWavFromPcmChunks = (pcmChunks, sampleRate = SAMPLE_RATE_HZ) => {
+  if (!pcmChunks?.length) return null;
+  const data = Buffer.concat(pcmChunks);
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+};
+
+const transcribePostCallAudio = async (pcmChunks) => {
+  if (!OPENAI_API_KEY) {
+    log("warn", "Cannot transcribe call audio without OPENAI_API_KEY.");
+    return null;
+  }
+  if (!pcmChunks?.length) return null;
+
+  const wavBuffer = createWavFromPcmChunks(pcmChunks);
+  if (!wavBuffer) return null;
+  if (typeof FormData === "undefined") {
+    log("error", "FormData is not available; cannot submit transcription request.");
+    return null;
+  }
+
+  try {
+    const formData = new FormData();
+    formData.append("model", OPENAI_TRANSCRIPTION_MODEL);
+    formData.append(
+      "file",
+      new Blob([wavBuffer], { type: "audio/wav" }),
+      "call-audio.wav"
+    );
+
+    const response = await fetch(
+      "https://api.openai.com/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+        body: formData
+      }
+    );
+
+    if (!response.ok) {
+      const errText = await response.text();
+      log(
+        "error",
+        "Post-call transcription failed:",
+        response.status,
+        errText
+      );
+      return null;
+    }
+
+    const payload = await response.json();
+    const text =
+      (typeof payload.text === "string" && payload.text.trim()) ||
+      "";
+    return text;
+  } catch (err) {
+    log("error", "Post-call transcription error:", err.message);
+    return null;
+  }
+};
 
 // --- logging helper
 const log = (level, ...args) => {
@@ -248,9 +370,6 @@ async function connectOpenAI(instructions, voice) {
       model: OPENAI_MODEL,
       output_modalities: ["audio"],
       instructions: finalInstructions,
-      input_audio_transcription: {
-        model: "gpt-4o-mini-transcribe"
-      },
       audio: {
         input: {
           // Twilio sends 8kHz PCMU μ-law
@@ -273,6 +392,17 @@ async function connectOpenAI(instructions, voice) {
     }
   };
 
+  if (modelSupportsInputAudioTranscription(OPENAI_MODEL)) {
+    sessionUpdate.session.input_audio_transcription = {
+      model: OPENAI_TRANSCRIPTION_MODEL
+    };
+  } else {
+    log(
+      "debug",
+      `Model ${OPENAI_MODEL} does not support input_audio_transcription; skipping.`
+    );
+  }
+
   oa.send(JSON.stringify(sessionUpdate));
   // Optional: Kick off a greeting if your base/preset expects it
   oa.send(JSON.stringify({ type: "response.create" }));
@@ -286,6 +416,8 @@ twilioWss.on("connection", async (twilioWs) => {
   let streamSid = null;
   let callActive = false;
   const userTranscriptionPartials = new Map();
+  const inboundAudioPcmChunks = [];
+  let postCallTranscriptionStarted = false;
 
   const textFrom = (value) => {
     if (!value) return "";
@@ -340,7 +472,48 @@ twilioWss.on("connection", async (twilioWs) => {
     userTranscriptionPartials.clear();
     if (callActive) {
       callActive = false;
-      broadcastTranscriptStatus("call_finished", { streamSid });
+    }
+    if (!postCallTranscriptionStarted) {
+      postCallTranscriptionStarted = true;
+      (async () => {
+        try {
+          if (inboundAudioPcmChunks.length > 0) {
+            broadcastTranscriptStatus("post_call_processing", { streamSid });
+            const transcriptText = await transcribePostCallAudio(
+              inboundAudioPcmChunks
+            );
+            inboundAudioPcmChunks.length = 0;
+            if (transcriptText) {
+              broadcastTranscript({
+                role: "user",
+                id: "post-call-user",
+                text: transcriptText,
+                append: false,
+                final: true
+              });
+              broadcastTranscriptStatus("post_call_transcript_ready", {
+                streamSid
+              });
+            } else {
+              broadcastTranscriptStatus("post_call_transcription_failed", {
+                streamSid
+              });
+            }
+          } else {
+            broadcastTranscriptStatus("post_call_transcription_failed", {
+              streamSid
+            });
+          }
+        } catch (err) {
+          log("error", "Failed post-call transcription:", err.message);
+          broadcastTranscriptStatus("post_call_transcription_failed", {
+            streamSid
+          });
+        } finally {
+          inboundAudioPcmChunks.length = 0;
+          broadcastTranscriptStatus("call_finished", { streamSid });
+        }
+      })();
     }
   };
 
@@ -517,6 +690,11 @@ twilioWss.on("connection", async (twilioWs) => {
 
     // Caller media (8kHz PCMU base64) -> Realtime input buffer
     if (evt === "media" && data.media?.payload) {
+      const track = data.media.track || "inbound";
+      if (track === "inbound") {
+        const pcmChunk = decodeMuLawBase64ToPcm16(data.media.payload);
+        if (pcmChunk) inboundAudioPcmChunks.push(pcmChunk);
+      }
       try {
         openaiWs?.send(JSON.stringify({ type: "input_audio_buffer.append", audio: data.media.payload }));
       } catch {}
