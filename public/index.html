@@ -228,6 +228,7 @@ $("callBtn").onclick = async () => {
     const c = await fetch("/api/call", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ to, promptId: p.promptId }) }).then(r=>r.json());
     if (!c.ok) throw new Error(c.error || "Call failed");
     setText("msg","Call placed!");
+    openTranscriptStream();
   } catch(e) {
     setText("msg", e.message || "error");
   } finally {
@@ -307,6 +308,20 @@ const transcriptState = {
 };
 const transcriptStatus = $("transcriptStatus");
 let transcriptRetry;
+let transcriptSocket = null;
+let transcriptSocketId = 0;
+let transcriptShouldReconnect = false;
+let transcriptClosedMessage = "Waiting for connection…";
+
+function resetTranscriptUI() {
+  Object.values(transcriptState).forEach((store) => {
+    store.entries.clear();
+    store.lastId = null;
+  });
+  Object.values(transcriptContainers).forEach((el) => {
+    while (el.firstChild) el.removeChild(el.firstChild);
+  });
+}
 
 function renderTranscript(role, id, text, { append = true, final = false } = {}) {
   const container = transcriptContainers[role];
@@ -341,26 +356,59 @@ function connectTranscriptStream() {
   clearTimeout(transcriptRetry);
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${scheme}://${location.host}/transcripts`);
+  const thisId = ++transcriptSocketId;
+  transcriptSocket = ws;
+  transcriptClosedMessage = "Waiting for connection…";
   transcriptStatus.textContent = "Connecting to transcription…";
 
   ws.onopen = () => {
+    if (transcriptSocketId !== thisId) return;
+    resetTranscriptUI();
     transcriptStatus.textContent = "Live transcription active.";
   };
 
   ws.onclose = () => {
-    transcriptStatus.textContent = "Disconnected. Reconnecting…";
-    transcriptRetry = setTimeout(connectTranscriptStream, 2500);
+    if (transcriptSocketId !== thisId) return;
+    transcriptSocket = null;
+    resetTranscriptUI();
+    const message = transcriptShouldReconnect
+      ? "Disconnected. Reconnecting…"
+      : transcriptClosedMessage || "Waiting for connection…";
+    transcriptStatus.textContent = message;
+    if (transcriptShouldReconnect) {
+      transcriptRetry = setTimeout(() => {
+        if (!transcriptSocket && transcriptShouldReconnect) {
+          connectTranscriptStream();
+        }
+      }, 2500);
+    } else {
+      transcriptClosedMessage = "Waiting for connection…";
+    }
   };
 
   ws.onerror = () => {
+    if (transcriptSocketId !== thisId) return;
     transcriptStatus.textContent = "Transcription connection error.";
   };
 
   ws.onmessage = (event) => {
+    if (transcriptSocketId !== thisId) return;
     let data;
     try { data = JSON.parse(event.data); } catch { return; }
-    if (data.type === "status" && data.status) {
-      transcriptStatus.textContent = data.status === "connected" ? "Live transcription ready." : data.status;
+    if (data.type === "status") {
+      const status = data.status;
+      if (!status) return;
+      if (status === "connected") {
+        transcriptStatus.textContent = transcriptSocket
+          ? "Live transcription ready."
+          : "Waiting for connection…";
+      } else if (status === "call_started") {
+        openTranscriptStream();
+      } else if (status === "call_finished") {
+        closeTranscriptStream("Call finished.");
+      } else {
+        transcriptStatus.textContent = status;
+      }
       return;
     }
     if (data.type !== "transcript" || !data.role) return;
@@ -369,9 +417,37 @@ function connectTranscriptStream() {
       final: Boolean(data.final)
     });
   };
+
+  return ws;
 }
 
-connectTranscriptStream();
+function openTranscriptStream() {
+  transcriptShouldReconnect = true;
+  transcriptClosedMessage = "Waiting for connection…";
+  if (
+    transcriptSocket &&
+    (transcriptSocket.readyState === WebSocket.OPEN ||
+      transcriptSocket.readyState === WebSocket.CONNECTING)
+  ) {
+    return transcriptSocket;
+  }
+  return connectTranscriptStream();
+}
+
+function closeTranscriptStream(message = "Waiting for connection…") {
+  transcriptShouldReconnect = false;
+  transcriptClosedMessage = message;
+  clearTimeout(transcriptRetry);
+  if (!transcriptSocket || transcriptSocket.readyState === WebSocket.CLOSED) {
+    resetTranscriptUI();
+    transcriptStatus.textContent = message;
+    return;
+  }
+  try { transcriptSocket.close(); } catch {}
+}
+
+window.openTranscriptStream = openTranscriptStream;
+window.closeTranscriptStream = closeTranscriptStream;
 </script>
 </body>
 </html>
