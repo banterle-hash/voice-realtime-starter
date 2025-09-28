@@ -248,10 +248,14 @@ async function connectOpenAI(instructions, voice) {
       model: OPENAI_MODEL,
       output_modalities: ["audio"],
       instructions: finalInstructions,
+      input_audio_transcription: {
+        model: "gpt-4o-mini-transcribe"
+      },
       audio: {
         input: {
           // Twilio sends 8kHz PCMU μ-law
           format: { type: "audio/pcmu" },
+          noise_suppression: { amount: "default" },
           // Turn-taking: a bit more sensitive + longer silence before response
           turn_detection: {
             type: "server_vad",
@@ -281,11 +285,59 @@ twilioWss.on("connection", async (twilioWs) => {
   let openaiWs;
   let streamSid = null;
   let callActive = false;
+  const userTranscriptionPartials = new Map();
+
+  const textFrom = (value) => {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) return value.map((v) => textFrom(v)).join("");
+    if (typeof value === "object") {
+      if (typeof value.text === "string") return value.text;
+      if (typeof value.transcript === "string") return value.transcript;
+      if (typeof value.delta === "string") return value.delta;
+      if (typeof value.content === "string") return value.content;
+      if (typeof value.value === "string") return value.value;
+    }
+    return "";
+  };
+
+  const userKeyFor = (itemId, contentIndex = 0) =>
+    `${itemId || "user"}:${contentIndex ?? 0}`;
+
+  const pushUserTranscriptDelta = ({ itemId, fallbackId, contentIndex = 0, chunk }) => {
+    if (!chunk) return;
+    const key = userKeyFor(itemId || fallbackId, contentIndex);
+    const existing = userTranscriptionPartials.get(key);
+    const id = existing?.id || itemId || fallbackId || key;
+    const text = (existing?.text || "") + chunk;
+    userTranscriptionPartials.set(key, { id, text });
+    broadcastTranscript({ role: "user", id, text: chunk, append: true });
+  };
+
+  const finalizeUserTranscript = ({
+    itemId,
+    fallbackId,
+    contentIndex = 0,
+    finalText
+  }) => {
+    const key = userKeyFor(itemId || fallbackId, contentIndex);
+    const existing = userTranscriptionPartials.get(key);
+    const id = existing?.id || itemId || fallbackId || key;
+    const text = finalText || existing?.text || "";
+    userTranscriptionPartials.delete(key);
+    const payload = { role: "user", id, final: true };
+    if (text) {
+      payload.text = text;
+      payload.append = false;
+    }
+    broadcastTranscript(payload);
+  };
 
   const safeClose = (why) => {
     log("info", "Closing bridge:", why || "");
     try { twilioWs?.close(); } catch {}
     try { openaiWs?.close(); } catch {}
+    userTranscriptionPartials.clear();
     if (callActive) {
       callActive = false;
       broadcastTranscriptStatus("call_finished", { streamSid });
@@ -358,15 +410,66 @@ twilioWss.on("connection", async (twilioWs) => {
           return;
         }
         if (
+          t === "conversation.item.input_audio_transcription.delta"
+        ) {
+          const itemId = msg.item_id || msg.itemId;
+          const contentIndex = msg.content_index ?? msg.contentIndex ?? 0;
+          const chunk =
+            textFrom(msg.delta) ||
+            textFrom(msg.transcript) ||
+            textFrom(msg.text);
+          const fallbackId =
+            msg.response?.id ||
+            msg.response_id ||
+            msg.id;
+          pushUserTranscriptDelta({
+            itemId,
+            contentIndex,
+            chunk,
+            fallbackId
+          });
+          return;
+        }
+        if (
+          t === "conversation.item.input_audio_transcription.completed"
+        ) {
+          const itemId = msg.item_id || msg.itemId;
+          const contentIndex = msg.content_index ?? msg.contentIndex ?? 0;
+          const finalText =
+            textFrom(msg.transcript) ||
+            textFrom(msg.text) ||
+            textFrom(msg.delta);
+          const fallbackId =
+            msg.response?.id ||
+            msg.response_id ||
+            msg.id;
+          finalizeUserTranscript({
+            itemId,
+            contentIndex,
+            finalText,
+            fallbackId
+          });
+          return;
+        }
+        if (
           (t === "response.input_audio_transcription.delta" ||
             t === "input_audio_buffer.transcription.delta") &&
           (msg.delta || msg.transcript)
         ) {
-          broadcastTranscript({
-            role: "user",
-            id: msg.response?.id || msg.response_id || msg.item_id || msg.id,
-            text: msg.delta || msg.transcript,
-            append: true
+          const chunk =
+            textFrom(msg.delta) ||
+            textFrom(msg.transcript) ||
+            textFrom(msg.text);
+          const fallbackId =
+            msg.response?.id ||
+            msg.response_id ||
+            msg.item_id ||
+            msg.id;
+          pushUserTranscriptDelta({
+            itemId: msg.item_id,
+            contentIndex: msg.content_index ?? msg.contentIndex ?? 0,
+            chunk,
+            fallbackId
           });
           return;
         }
@@ -374,17 +477,22 @@ twilioWss.on("connection", async (twilioWs) => {
           t === "response.input_audio_transcription.completed" ||
           t === "input_audio_buffer.transcription.completed"
         ) {
+          const fallbackId =
+            msg.response?.id ||
+            msg.response_id ||
+            msg.item_id ||
+            msg.id;
           const text =
             msg.transcription?.text ||
             msg.response?.input_audio_transcription?.text ||
-            msg.text ||
-            "";
-          broadcastTranscript({
-            role: "user",
-            id: msg.response?.id || msg.response_id || msg.item_id || msg.id,
-            text,
-            append: text ? false : undefined,
-            final: true
+            textFrom(msg.transcript) ||
+            textFrom(msg.text) ||
+            textFrom(msg.delta);
+          finalizeUserTranscript({
+            itemId: msg.item_id,
+            contentIndex: msg.content_index ?? msg.contentIndex ?? 0,
+            finalText: text,
+            fallbackId
           });
           return;
         }
