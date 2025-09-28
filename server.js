@@ -261,6 +261,9 @@ async function connectOpenAI(instructions, voice) {
     oa.once("error", reject);
   });
 
+  const supportsInputTranscription =
+    modelSupportsInputAudioTranscription(OPENAI_MODEL);
+
   const sessionUpdate = {
     type: "session.update",
     session: {
@@ -290,7 +293,7 @@ async function connectOpenAI(instructions, voice) {
     }
   };
 
-  if (modelSupportsInputAudioTranscription(OPENAI_MODEL)) {
+  if (supportsInputTranscription) {
     sessionUpdate.session.input_audio_transcription = {
       model: OPENAI_TRANSCRIPTION_MODEL
     };
