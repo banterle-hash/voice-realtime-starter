@@ -118,6 +118,13 @@
             </select>
           </div>
           <div>
+            <label for="model">Model</label>
+            <select id="model">
+              <option value="gpt-realtime">Standard (gpt-realtime)</option>
+              <option value="gpt-realtime-mini-2025-10-06">Realtime Mini (2025-10-06)</option>
+            </select>
+          </div>
+          <div style="grid-column:1 / span 2">
             <label for="phone">Your phone (+15551234567)</label>
             <input id="phone" placeholder="+15551234567" class="kbd" />
           </div>
@@ -186,6 +193,22 @@ const show = (id, on=true) => ($(id).style.display = on ? "" : "none");
     const base = (cfg.baseUrl || location.origin);
     setText("hostBadge", "host: " + base);
     $("voice").value = "alloy"; // default
+    const modelSel = $("model");
+    if (Array.isArray(cfg.models) && cfg.models.length) {
+      modelSel.innerHTML = "";
+      cfg.models.forEach((opt) => {
+        const entry = typeof opt === "string" ? { id: opt, label: opt } : opt;
+        if (!entry?.id) return;
+        const o = document.createElement("option");
+        o.value = entry.id;
+        o.textContent = entry.label || entry.id;
+        modelSel.appendChild(o);
+      });
+    }
+    const firstModel = Array.isArray(cfg.models) && cfg.models.length
+      ? (typeof cfg.models[0] === "string" ? cfg.models[0] : cfg.models[0]?.id)
+      : null;
+    modelSel.value = cfg.defaultModel || modelSel.value || firstModel || "gpt-realtime";
     setText("callInNumber", cfg.twilioFrom || "— (set TWILIO_FROM in .env)");
   } catch {}
 })();
@@ -195,6 +218,7 @@ $("usePreset").onclick = () => { const v = $("preset").value; if (v) $("instr").
 $("callBtn").onclick = async () => {
   const to = $("phone").value.trim();
   const voice = $("voice").value;
+  const model = $("model").value;
   const instructions = $("instr").value.trim();
   if (!instructions) return setText("msg","Enter instructions");
   if (!/^\+\d{10,15}$/.test(to)) return setText("msg","Phone must be +E164");
@@ -202,7 +226,7 @@ $("callBtn").onclick = async () => {
   $("callBtn").disabled = true;
   setText("msg","dialing…");
   try {
-    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, voice }) }).then(r=>r.json());
+    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, voice, model }) }).then(r=>r.json());
     if (!p.promptId) throw new Error(p.error || "No promptId");
     const c = await fetch("/api/call", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ to, promptId: p.promptId }) }).then(r=>r.json());
     if (!c.ok) throw new Error(c.error || "Call failed");
@@ -230,13 +254,14 @@ accBtn.onclick = () => {
 /* Generate inbound assets (on demand) */
 $("genBtn").onclick = async () => {
   const voice = $("voice").value;
+  const model = $("model").value;
   const instructions = $("instr").value.trim();
   if (!instructions) return setText("genMsg","Enter instructions");
 
   $("genBtn").disabled = true;
   setText("genMsg","generating…");
   try {
-    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, voice }) }).then(r=>r.json());
+    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, voice, model }) }).then(r=>r.json());
     if (!p.promptId) throw new Error(p.error || "No promptId");
 
     const cfg = await fetch("/api/config").then(r=>r.json());
@@ -251,6 +276,7 @@ $("genBtn").onclick = async () => {
     <Stream url="${streamUrl}">
       <Parameter name="promptId" value="${p.promptId}"/>
       <Parameter name="voice" value="${voice}"/>
+      <Parameter name="model" value="${model}"/>
     </Stream>
   </Connect>
   <Pause length="3600"/>
