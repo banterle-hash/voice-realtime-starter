@@ -203,6 +203,8 @@ async function connectOpenAI(instructions, voice, model) {
     oa.once("error", reject);
   });
 
+  log("info", `OpenAI WS connected (requested model: ${chosenModel})`);
+
   const sessionUpdate = {
     type: "session.update",
     session: {
@@ -284,6 +286,18 @@ wss.on("connection", async (twilioWs) => {
       openaiWs.on("message", (raw) => {
         let msg; try { msg = JSON.parse(raw.toString()); } catch { return; }
         const t = msg.type;
+
+        if (t === "session.created" || t === "session.updated") {
+          const activeModel = msg?.session?.model || msg?.model;
+          const sessionId = msg?.session?.id || msg?.id;
+          log(
+            "info",
+            "OpenAI session ready",
+            sessionId ? `(sessionId: ${sessionId})` : "",
+            activeModel ? `model=${activeModel}` : ""
+          );
+          return;
+        }
 
         // Stream model audio to Twilio
         if (t === "response.output_audio.delta" && msg.delta && streamSid) {
