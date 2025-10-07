@@ -15,12 +15,25 @@ const server = http.createServer(app);
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-realtime";
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-realtime";
 const DEFAULT_VOICE = process.env.OPENAI_VOICE || "alloy";
 const APP_BASE_URL = process.env.APP_BASE_URL || ""; // set by tunnel or CLI script
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM = process.env.TWILIO_FROM;
+
+const MODEL_OPTION_DESCRIPTORS = [
+  { id: DEFAULT_MODEL, label: "Standard" },
+  { id: "gpt-realtime-mini-2025-10-06", label: "Realtime Mini (2025-10-06)" }
+];
+const MODEL_OPTIONS = [];
+const SEEN_MODELS = new Set();
+for (const opt of MODEL_OPTION_DESCRIPTORS) {
+  if (!opt?.id || SEEN_MODELS.has(opt.id)) continue;
+  SEEN_MODELS.add(opt.id);
+  MODEL_OPTIONS.push({ id: opt.id, label: opt.label || opt.id });
+}
+const MODEL_IDS = MODEL_OPTIONS.map((opt) => opt.id);
 
 const twilioClient =
   TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
@@ -42,12 +55,12 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static("public"));
 
 // --- In-memory prompt store (10 min)
-const prompts = new Map(); // id -> { instructions, voice, createdAt }
+const prompts = new Map(); // id -> { instructions, voice, model, createdAt }
 const EXPIRY_MS = 10 * 60 * 1000;
 
-function putPrompt(instructions, voice) {
+function putPrompt(instructions, voice, model) {
   const id = crypto.randomUUID();
-  prompts.set(id, { instructions, voice, createdAt: Date.now() });
+  prompts.set(id, { instructions, voice, model, createdAt: Date.now() });
   return id;
 }
 function getPrompt(id) {
@@ -85,18 +98,22 @@ app.get("/api/config", (req, res) => {
   res.json({
     baseUrl: base,
     twilioFrom: TWILIO_FROM || null,
-    voices: ["alloy","ash","ballad","coral","echo","sage","shimmer","verse"]
+    voices: ["alloy","ash","ballad","coral","echo","sage","shimmer","verse"],
+    models: MODEL_OPTIONS,
+    defaultModel: DEFAULT_MODEL
   });
 });
 
 // --- 1) Create a prompt
 app.post("/api/prompts", (req, res) => {
   try {
-    let { instructions = "", voice = DEFAULT_VOICE } = req.body || {};
+    let { instructions = "", voice = DEFAULT_VOICE, model = DEFAULT_MODEL } = req.body || {};
     instructions = String(instructions || "").slice(0, 4000);
     voice = String(voice || DEFAULT_VOICE);
+    model = String(model || DEFAULT_MODEL);
     if (!instructions.trim()) return res.status(400).json({ error: "instructions required" });
-    const promptId = putPrompt(instructions, voice);
+    if (!MODEL_IDS.includes(model)) return res.status(400).json({ error: "unsupported model" });
+    const promptId = putPrompt(instructions, voice, model);
     res.json({ promptId });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -158,6 +175,7 @@ app.all("/twiml", (req, res) => {
     <Stream url="${streamUrl}">
       <Parameter name="promptId" value="${promptId}"/>
       <Parameter name="voice" value="${p.voice || DEFAULT_VOICE}"/>
+      <Parameter name="model" value="${p.model || DEFAULT_MODEL}"/>
     </Stream>
   </Connect>
   <Pause length="3600"/>
@@ -170,11 +188,12 @@ app.all("/twiml", (req, res) => {
 const wss = new WebSocketServer({ server, path: "/stream" });
 wss.on("error", (e) => log("error", "WSS error:", e.message));
 
-async function connectOpenAI(instructions, voice) {
+async function connectOpenAI(instructions, voice, model) {
   // Compose final instructions: Base Rules + user preset
   const finalInstructions = composeInstructions(instructions);
+  const chosenModel = MODEL_IDS.includes(model) ? model : DEFAULT_MODEL;
 
-  const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_MODEL)}`;
+  const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(chosenModel)}`;
   const headers = { Authorization: `Bearer ${OPENAI_API_KEY}` };
 
   const oa = new WebSocket(url, { headers });
@@ -188,7 +207,7 @@ async function connectOpenAI(instructions, voice) {
     type: "session.update",
     session: {
       type: "realtime",
-      model: OPENAI_MODEL,
+      model: chosenModel,
       output_modalities: ["audio"],
       instructions: finalInstructions,
       audio: {
@@ -246,14 +265,16 @@ wss.on("connection", async (twilioWs) => {
       // Extract custom parameters (promptId, voice) placed in TwiML
       const params = data.start?.customParameters || {};
       const promptId = params.promptId;
-      const voice = params.voice || DEFAULT_VOICE;
+      const modelParam = params.model;
 
       // Resolve instructions from in-memory store
       const p = promptId ? getPrompt(promptId) : null;
       const instructions = p?.instructions;
+      const voice = p?.voice || params.voice || DEFAULT_VOICE;
+      const model = p?.model || modelParam || DEFAULT_MODEL;
 
       try {
-        openaiWs = await connectOpenAI(instructions, voice);
+        openaiWs = await connectOpenAI(instructions, voice, model);
       } catch (e) {
         log("error", "OpenAI connect failed:", e.message);
         return safeClose("openai_connect_error");
