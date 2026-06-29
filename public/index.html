@@ -9,6 +9,7 @@
     --bg:#0a0b0d; --panel:#0e1115; --border:#1a1f26; --text:#d6f5d6; --muted:#8fbf8f;
     --accent:#36d399; --danger:#ff6b6b; --mono: ui-monospace, Menlo, Monaco, Consolas, "Courier New", monospace;
   }
+  *,*::before,*::after{box-sizing:border-box}
   html,body{height:100%}
   body{
     margin:0; background:radial-gradient(1000px 600px at 20% 10%, #0c1016 0%, #0a0b0d 60%, #07080a 100%);
@@ -39,7 +40,12 @@
   textarea{height:180px; resize:vertical}
   select{background:#0b0e12}
   input::placeholder, textarea::placeholder{color:#5f805f}
-  .row{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  .row{display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px}
+  .span-all{grid-column:1 / -1}
+  @media (max-width: 720px){
+    .row{grid-template-columns:1fr}
+    .span-all{grid-column:auto}
+  }
   button{
     cursor:pointer; font-weight:800; letter-spacing:.6px; text-transform:uppercase;
     background:linear-gradient(180deg,#173625,#12271c); border:1px solid #1f3f2f;
@@ -54,6 +60,18 @@
   .kbd{display:inline-block; padding:4px 8px; background:#0d1215; border:1px solid #26323a; border-radius:6px; font-weight:700; font-size:12px}
   .code{background:#0a0d10; line-height:1.45; white-space:pre; overflow:auto}
   .badge{display:inline-block; padding:2px 8px; border:1px solid #244; border-radius:999px; font-size:12px; color:#a6cfa6; background:#0b1012}
+  .score-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:10px}
+  .score-grid select{padding:8px}
+  .run-list{display:grid; gap:8px; margin-top:10px}
+  .run-card{border:1px solid #1f2b33; border-radius:8px; padding:10px; background:#090c10}
+  .run-top{display:flex; justify-content:space-between; gap:10px; align-items:flex-start}
+  .metrics{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px}
+  .metric{border:1px solid #24313a; border-radius:999px; padding:2px 7px; color:#9fc99f; background:#0c1115; font-size:12px}
+  .link-btn{display:inline-block; width:auto; text-decoration:none; text-align:center; padding:10px 12px; border-radius:8px; border:1px solid #22303a; background:#0f1419; color:var(--text); font-family:var(--mono); font-weight:800; text-transform:uppercase; letter-spacing:.6px}
+  @media (max-width: 720px){
+    .score-grid{grid-template-columns:1fr}
+    .run-top{display:block}
+  }
   /* retro accordion */
   .accordion {border:1px solid var(--border); border-radius:8px; background:#0b0e12;}
   .acc-head{
@@ -105,10 +123,26 @@
           <button id="usePreset" class="secondary">Use preset</button>
         </div>
 
+        <div class="grid" style="grid-template-columns:1fr auto; align-items:end; gap:10px">
+          <div>
+            <label for="stressScenario">Stress scenario</label>
+            <select id="stressScenario">
+              <option value="">— Select a stress scenario —</option>
+            </select>
+          </div>
+          <button id="useScenario" class="secondary">Use scenario</button>
+        </div>
+
         <label for="instr">Instructions (prompt)</label>
         <textarea id="instr" placeholder="Add any caller-specific rules here…"></textarea>
 
         <div class="row">
+          <div>
+            <label for="provider">Provider</label>
+            <select id="provider">
+              <option value="openai">OpenAI Realtime</option>
+            </select>
+          </div>
           <div>
             <label for="voice">Voice</label>
             <select id="voice">
@@ -124,7 +158,7 @@
               <option value="gpt-realtime-mini-2025-10-06">Realtime Mini (2025-10-06)</option>
             </select>
           </div>
-          <div style="grid-column:1 / span 2">
+          <div class="span-all">
             <label for="phone">Your phone (+15551234567)</label>
             <input id="phone" placeholder="+15551234567" class="kbd" />
           </div>
@@ -133,6 +167,17 @@
         <div style="display:flex; gap:10px; align-items:center">
           <button id="callBtn">☎ Call me</button>
           <span id="msg" class="hint"></span>
+        </div>
+
+        <div class="panel" style="margin-top:12px">
+          <div class="section">Paired A/B test</div>
+          <div class="muted">Use the same prompt and phone number, randomize provider order, then score each call before dialing the next one.</div>
+          <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:10px">
+            <button id="createPair" class="secondary">Create pair</button>
+            <button id="callNextPair">Call next</button>
+            <span id="pairMsg" class="hint"></span>
+          </div>
+          <div id="pairStatus" class="run-list"></div>
         </div>
 
         <!-- INBOUND (Accordion; hidden until user expands) -->
@@ -178,6 +223,46 @@
           </div>
         </div>
 
+        <div class="panel" id="evaluation" style="margin-top:12px">
+          <div class="section">Evaluation</div>
+          <div class="muted" id="activeRun">No active call yet.</div>
+          <div class="score-grid">
+            <div>
+              <label for="scoreLatency">Latency</label>
+              <select id="scoreLatency"><option value="">—</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+            </div>
+            <div>
+              <label for="scoreNaturalness">Naturalness</label>
+              <select id="scoreNaturalness"><option value="">—</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+            </div>
+            <div>
+              <label for="scoreInterruptions">Interruptions</label>
+              <select id="scoreInterruptions"><option value="">—</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+            </div>
+            <div>
+              <label for="scoreAdherence">Adherence</label>
+              <select id="scoreAdherence"><option value="">—</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+            </div>
+            <div>
+              <label for="scoreRecovery">Recovery</label>
+              <select id="scoreRecovery"><option value="">—</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+            </div>
+            <div>
+              <label for="scoreOverall">Overall</label>
+              <select id="scoreOverall"><option value="">—</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+            </div>
+          </div>
+          <label for="scoreNotes" style="display:block; margin-top:10px">Notes</label>
+          <textarea id="scoreNotes" style="height:72px" placeholder="What failed under phone-call stress?"></textarea>
+          <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:10px">
+            <button id="saveEval">Save score</button>
+            <button id="refreshRuns" class="secondary">Refresh runs</button>
+            <a id="exportRuns" class="link-btn" href="/api/runs.csv">Export CSV</a>
+            <span id="evalMsg" class="hint"></span>
+          </div>
+          <div id="runs" class="run-list"></div>
+        </div>
+
       </div> <!-- /content -->
     </div>   <!-- /crt-box -->
   </div>     <!-- /wrap -->
@@ -186,39 +271,208 @@
 const $ = id => document.getElementById(id);
 const setText = (id, v) => ($(id).textContent = v);
 const show = (id, on=true) => ($(id).style.display = on ? "" : "none");
+let providersById = {};
+let currentRunId = null;
+let currentPairId = null;
+let stressScenariosById = {};
+
+const scoreControls = {
+  latency: "scoreLatency",
+  naturalness: "scoreNaturalness",
+  interruptions: "scoreInterruptions",
+  instructionAdherence: "scoreAdherence",
+  recovery: "scoreRecovery",
+  overall: "scoreOverall"
+};
+
+function setSelectOptions(select, options, selectedValue) {
+  select.innerHTML = "";
+  options.forEach((opt) => {
+    const entry = typeof opt === "string" ? { id: opt, label: opt } : opt;
+    if (!entry || entry.id === undefined || entry.id === null) return;
+    const o = document.createElement("option");
+    o.value = entry.id;
+    o.textContent = entry.label || entry.id;
+    select.appendChild(o);
+  });
+  if (selectedValue && [...select.options].some((o) => o.value === selectedValue)) {
+    select.value = selectedValue;
+  }
+}
+
+function activeProvider() {
+  return providersById[$("provider").value] || Object.values(providersById)[0] || null;
+}
+
+function updateProviderControls() {
+  const provider = activeProvider();
+  if (!provider) return;
+  setSelectOptions($("voice"), provider.voices || [], provider.defaultVoice);
+  setSelectOptions($("model"), provider.models || [], provider.defaultModel);
+}
+
+function selectedScenarioId() {
+  return $("stressScenario")?.value || "";
+}
+
+function applyScenarioText() {
+  const scenario = stressScenariosById[selectedScenarioId()];
+  if (!scenario?.prompt) return;
+  const current = $("instr").value.trim();
+  if (current.includes(scenario.prompt)) return;
+  $("instr").value = current ? `${current}\n\n${scenario.prompt}` : scenario.prompt;
+}
+
+function setActiveRun(run) {
+  currentRunId = run?.id || null;
+  if (!run) {
+    setText("activeRun", "No active call yet.");
+    return;
+  }
+  setText("activeRun", `${run.provider} / ${run.model} / ${run.voice} / ${run.status}`);
+  for (const [field, id] of Object.entries(scoreControls)) {
+    $(id).value = run.evaluation?.[field] || "";
+  }
+  $("scoreNotes").value = run.evaluation?.notes || "";
+}
+
+function ms(v) {
+  return v === null || v === undefined ? "—" : `${v}ms`;
+}
+
+function scoreSummary(evaluation) {
+  if (!evaluation) return "unscored";
+  return `overall ${evaluation.overall || "—"} / latency ${evaluation.latency || "—"} / interruptions ${evaluation.interruptions || "—"}`;
+}
+
+function runCard(run) {
+  const sid = run.twilioCallSid ? run.twilioCallSid.slice(-8) : "pending";
+  return `<div class="run-card">
+    <div class="run-top">
+      <div>
+        <b>${run.provider}</b> <span class="muted">${run.model}</span><br/>
+        <span class="muted">${run.voice} / ${run.direction} / ${run.status} / ${run.scenarioLabel || "no scenario"} / sid ${sid}</span>
+      </div>
+      <button class="secondary" data-run="${run.id}" style="width:auto">Score</button>
+    </div>
+    <div class="metrics">
+      <span class="metric">connect ${ms(run.connectMs)}</span>
+      <span class="metric">first audio ${ms(run.firstAudioMs)}</span>
+      <span class="metric">${scoreSummary(run.evaluation)}</span>
+    </div>
+    ${run.error ? `<div class="hint" style="margin-top:8px">${run.error}</div>` : ""}
+  </div>`;
+}
+
+function pairStepLabel(step, idx) {
+  const sid = step.twilioCallSid ? ` / sid ${step.twilioCallSid.slice(-8)}` : "";
+  return `<div class="metric">${idx + 1}. ${step.provider} / ${step.model} / ${step.status}${sid}</div>`;
+}
+
+function renderPair(pair) {
+  if (!pair) {
+    $("pairStatus").innerHTML = `<div class="muted">No pair created yet.</div>`;
+    return;
+  }
+  $("pairStatus").innerHTML = `<div class="run-card">
+    <div class="run-top">
+      <div>
+        <b>Pair ${pair.id.slice(0, 8)}</b> <span class="muted">${pair.status}</span><br/>
+        <span class="muted">${pair.scenarioLabel || "no scenario"} / ${pair.promptPreview || ""}</span>
+      </div>
+    </div>
+    <div class="metrics">${(pair.steps || []).map(pairStepLabel).join("")}</div>
+  </div>`;
+}
+
+async function refreshPairs(selectPairId = currentPairId) {
+  try {
+    const data = await fetch("/api/pairs").then(r=>r.json());
+    const pairs = Array.isArray(data.pairs) ? data.pairs : [];
+    const pair = pairs.find((p) => p.id === selectPairId) || pairs[0];
+    currentPairId = pair?.id || currentPairId;
+    renderPair(pair);
+  } catch (e) {
+    setText("pairMsg", e.message || "Pair refresh failed");
+  }
+}
+
+async function loadRuns(selectRunId = currentRunId) {
+  try {
+    const data = await fetch("/api/runs").then(r=>r.json());
+    const runs = Array.isArray(data.runs) ? data.runs : [];
+    $("runs").innerHTML = runs.length ? runs.map(runCard).join("") : `<div class="muted">No runs yet.</div>`;
+    [...$("runs").querySelectorAll("[data-run]")].forEach((btn) => {
+      btn.onclick = () => {
+        const run = runs.find((r) => r.id === btn.dataset.run);
+        setActiveRun(run);
+      };
+    });
+    const active = runs.find((r) => r.id === selectRunId) || runs[0];
+    if (active) setActiveRun(active);
+  } catch (e) {
+    setText("evalMsg", e.message || "Run refresh failed");
+  }
+}
 
 (async function boot(){
   try {
     const cfg = await fetch("/api/config").then(r=>r.json());
     const base = (cfg.baseUrl || location.origin);
     setText("hostBadge", "host: " + base);
-    $("voice").value = "alloy"; // default
-    const modelSel = $("model");
-    if (Array.isArray(cfg.models) && cfg.models.length) {
-      modelSel.innerHTML = "";
-      cfg.models.forEach((opt) => {
-        const entry = typeof opt === "string" ? { id: opt, label: opt } : opt;
-        if (!entry?.id) return;
-        const o = document.createElement("option");
-        o.value = entry.id;
-        o.textContent = entry.label || entry.id;
-        modelSel.appendChild(o);
-      });
+
+    const stressScenarios = Array.isArray(cfg.stressScenarios) && cfg.stressScenarios.length
+      ? cfg.stressScenarios
+      : [
+        { id: "interruptions", label: "Interruptions", prompt: "Stress scenario: the caller will interrupt mid-answer twice. Stop speaking quickly, acknowledge the interruption, and continue with the newest request." },
+        { id: "spelling_ids", label: "Spelling and IDs", prompt: "Stress scenario: collect a name, email, and order ID over the phone. Repeat back ambiguous letters and digits before proceeding." }
+      ];
+    stressScenariosById = Object.fromEntries(stressScenarios.map((s) => [s.id, s]));
+    setSelectOptions(
+      $("stressScenario"),
+      [{ id: "", label: "— Select a stress scenario —" }, ...stressScenarios],
+      ""
+    );
+
+    if (Array.isArray(cfg.providers) && cfg.providers.length) {
+      providersById = Object.fromEntries(cfg.providers.map((p) => [p.id, p]));
+      setSelectOptions(
+        $("provider"),
+        cfg.providers.map((p) => ({
+          id: p.id,
+          label: p.configured ? p.label : `${p.label} (key missing)`
+        })),
+        cfg.defaultProvider || cfg.providers[0].id
+      );
+      updateProviderControls();
+    } else {
+      providersById = {
+        openai: {
+          id: "openai",
+          label: "OpenAI Realtime",
+          defaultVoice: "alloy",
+          defaultModel: "gpt-realtime",
+          voices: ["alloy","ash","ballad","coral","echo","sage","shimmer","verse"],
+          models: [{ id: "gpt-realtime", label: "Standard (gpt-realtime)" }]
+        }
+      };
+      updateProviderControls();
     }
-    const firstModel = Array.isArray(cfg.models) && cfg.models.length
-      ? (typeof cfg.models[0] === "string" ? cfg.models[0] : cfg.models[0]?.id)
-      : null;
-    modelSel.value = cfg.defaultModel || modelSel.value || firstModel || "gpt-realtime";
     setText("callInNumber", cfg.twilioFrom || "— (set TWILIO_FROM in .env)");
   } catch {}
 })();
 
+$("provider").onchange = updateProviderControls;
+
 $("usePreset").onclick = () => { const v = $("preset").value; if (v) $("instr").value = v; };
+$("useScenario").onclick = applyScenarioText;
 
 $("callBtn").onclick = async () => {
   const to = $("phone").value.trim();
+  const provider = $("provider").value;
   const voice = $("voice").value;
   const model = $("model").value;
+  const scenarioId = selectedScenarioId();
   const instructions = $("instr").value.trim();
   if (!instructions) return setText("msg","Enter instructions");
   if (!/^\+\d{10,15}$/.test(to)) return setText("msg","Phone must be +E164");
@@ -226,15 +480,63 @@ $("callBtn").onclick = async () => {
   $("callBtn").disabled = true;
   setText("msg","dialing…");
   try {
-    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, voice, model }) }).then(r=>r.json());
+    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, provider, voice, model, scenarioId }) }).then(r=>r.json());
     if (!p.promptId) throw new Error(p.error || "No promptId");
     const c = await fetch("/api/call", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ to, promptId: p.promptId }) }).then(r=>r.json());
     if (!c.ok) throw new Error(c.error || "Call failed");
+    currentRunId = c.runId || null;
     setText("msg","Call placed!");
+    await loadRuns(currentRunId);
   } catch(e) {
     setText("msg", e.message || "error");
   } finally {
     $("callBtn").disabled = false;
+  }
+};
+
+$("createPair").onclick = async () => {
+  const to = $("phone").value.trim();
+  const scenarioId = selectedScenarioId();
+  const instructions = $("instr").value.trim();
+  if (!instructions) return setText("pairMsg","Enter instructions");
+  if (!/^\+\d{10,15}$/.test(to)) return setText("pairMsg","Phone must be +E164");
+
+  $("createPair").disabled = true;
+  setText("pairMsg","creating…");
+  try {
+    const result = await fetch("/api/pairs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, instructions, scenarioId, providers: ["openai", "xai"] })
+    }).then(r=>r.json());
+    if (!result.pair) throw new Error(result.error || "Pair creation failed");
+    currentPairId = result.pair.id;
+    renderPair(result.pair);
+    setText("pairMsg","Pair ready");
+  } catch (e) {
+    setText("pairMsg", e.message || "Pair creation failed");
+  } finally {
+    $("createPair").disabled = false;
+  }
+};
+
+$("callNextPair").onclick = async () => {
+  if (!currentPairId) return setText("pairMsg","Create a pair first");
+  $("callNextPair").disabled = true;
+  setText("pairMsg","dialing next…");
+  try {
+    const result = await fetch(`/api/pairs/${encodeURIComponent(currentPairId)}/call-next`, { method: "POST" }).then(r=>r.json());
+    if (!result.ok) throw new Error(result.error || "Pair call failed");
+    renderPair(result.pair);
+    if (result.runId) {
+      currentRunId = result.runId;
+      await loadRuns(currentRunId);
+    }
+    setText("pairMsg", result.done ? "Pair complete" : "Call placed");
+  } catch (e) {
+    setText("pairMsg", e.message || "Pair call failed");
+  } finally {
+    $("callNextPair").disabled = false;
   }
 };
 
@@ -253,15 +555,17 @@ accBtn.onclick = () => {
 
 /* Generate inbound assets (on demand) */
 $("genBtn").onclick = async () => {
+  const provider = $("provider").value;
   const voice = $("voice").value;
   const model = $("model").value;
+  const scenarioId = selectedScenarioId();
   const instructions = $("instr").value.trim();
   if (!instructions) return setText("genMsg","Enter instructions");
 
   $("genBtn").disabled = true;
   setText("genMsg","generating…");
   try {
-    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, voice, model }) }).then(r=>r.json());
+    const p = await fetch("/api/prompts", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instructions, provider, voice, model, scenarioId }) }).then(r=>r.json());
     if (!p.promptId) throw new Error(p.error || "No promptId");
 
     const cfg = await fetch("/api/config").then(r=>r.json());
@@ -275,6 +579,7 @@ $("genBtn").onclick = async () => {
   <Connect>
     <Stream url="${streamUrl}">
       <Parameter name="promptId" value="${p.promptId}"/>
+      <Parameter name="provider" value="${provider}"/>
       <Parameter name="voice" value="${voice}"/>
       <Parameter name="model" value="${model}"/>
     </Stream>
@@ -300,6 +605,38 @@ $("copyTwiml").onclick = async () => {
   try { await navigator.clipboard.writeText($("twiml").textContent); setText("genMsg","Copied TwiML"); setTimeout(()=>setText("genMsg",""),1200); }
   catch { setText("genMsg","Copy failed"); }
 };
+
+$("refreshRuns").onclick = () => loadRuns();
+$("saveEval").onclick = async () => {
+  if (!currentRunId) return setText("evalMsg", "Select a run first");
+  const body = {
+    latency: $("scoreLatency").value,
+    naturalness: $("scoreNaturalness").value,
+    interruptions: $("scoreInterruptions").value,
+    instructionAdherence: $("scoreAdherence").value,
+    recovery: $("scoreRecovery").value,
+    overall: $("scoreOverall").value,
+    notes: $("scoreNotes").value
+  };
+  $("saveEval").disabled = true;
+  setText("evalMsg", "saving…");
+  try {
+    const result = await fetch(`/api/runs/${encodeURIComponent(currentRunId)}/evaluation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(r=>r.json());
+    if (!result.ok) throw new Error(result.error || "Save failed");
+    setText("evalMsg", "Score saved");
+    await loadRuns(currentRunId);
+  } catch (e) {
+    setText("evalMsg", e.message || "Save failed");
+  } finally {
+    $("saveEval").disabled = false;
+  }
+};
+loadRuns();
+refreshPairs();
 </script>
 </body>
 </html>
